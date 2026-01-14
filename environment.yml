@@ -1,14 +1,31 @@
 name: linearvc
 channels:
-  - conda-forge
   - pytorch
   - nvidia
+  - conda-forge
 dependencies:
-  - python=3
-  - jupyter
-  - ipython
+  - python=3.13
+  - pip
   - numpy
+  - scipy
+  - pandas
+  - scikit-learn
   - tqdm
-  - pytorch
+  - pytorch>=2.5
+  - torchaudio>=2.5
+  - pytorch-cuda=12.1
+  - torchvision
   - celer
-  - torchaudio
+  - jupyterlab
+  - ipykernel
+  - ipython
+  - ffmpeg
+  - sox
+  - libflac
+  - libsndfile
+  - ca-certificates
+  - openssl
+  - pip:
+      - speechbrain
+      - jiwer
+      - openai-whisper
