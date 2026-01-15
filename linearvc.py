@@ -19,38 +19,50 @@ from utils import fast_cosine_dist
 
 n_frames_max = 8192  # maximum no. of matched frames in linear regression
 k_top = 1
+VAD_TRIGGER_LEVEL = 7.0
+DEFAULT_SAMPLE_RATE = 16000
+DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 class LinearVC(nn.Module):
-    def __init__(self, wavlm, hifigan, device="cuda"):
+    def __init__(
+        self,
+        wavlm,
+        hifigan,
+        device: str = DEFAULT_DEVICE,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
+    ):
         super().__init__()
-        self.wavlm = wavlm.eval()
-        self.hifigan = hifigan.eval()
         self.device = device
-        self.sr = 16000
+        self.sr = sample_rate
+        self.wavlm = wavlm.eval().to(self.device)
+        self.hifigan = hifigan.eval().to(self.device)
 
     @torch.inference_mode()
     def get_features(self, wav_fn, vad=False):
         """
         Return features of `wav_fn` as a tensor with shape (n_frames, dim).
 
-        VAD is applied by default.
+        VAD can optionally be applied to remove leading silence.
         """
 
         wav, sr = torchaudio.load(wav_fn)
         wav = wav.to(self.device)
 
-        if not sr == self.sr:
-            wav = F.resample(
-                wav,
-                orig_freq=sr,
-                new_freq=self.sr,
-                trigger_level=vad_trigger_level,
-            )
+        if sr != self.sr:
+            wav = F.resample(wav, orig_freq=sr, new_freq=self.sr)
 
         # Trim silence at beginning (if specified)
         if vad:
-            wav = F.vad(wav, self.sr)
+            wav_cpu = wav.cpu()
+            trimmed = F.vad(
+                wav_cpu,
+                sample_rate=self.sr,
+                trigger_level=VAD_TRIGGER_LEVEL,
+            )
+            if trimmed.numel() == 0:
+                trimmed = wav_cpu
+            wav = trimmed.to(self.device)
 
         features, _ = self.wavlm.extract_features(wav, output_layer=6)
         features = features.squeeze()
@@ -63,6 +75,11 @@ class LinearVC(nn.Module):
     ):
         if parallel and lasso is None:
             lasso = 0.3
+
+        if not source_wavs:
+            raise ValueError("No source waveforms were provided.")
+        if not target_wavs:
+            raise ValueError("No target waveforms were provided.")
 
         if not parallel:
             # Source features
@@ -87,13 +104,16 @@ class LinearVC(nn.Module):
             linear_target = target_features[best.indices].mean(dim=1)
         else:
             # Audio with the same name: parallel utterance pairs
-            source_target_wav_pairs = []
-            for source_wav_fn in sorted(source_wavs):
-                for target_wav_fn in sorted(target_wavs):
-                    if source_wav_fn.name == target_wav_fn.name:
-                        source_target_wav_pairs.append(
-                            (source_wav_fn, target_wav_fn)
-                        )
+            source_map = {wav_fn.name: wav_fn for wav_fn in source_wavs}
+            target_map = {wav_fn.name: wav_fn for wav_fn in target_wavs}
+            common_files = sorted(source_map.keys() & target_map.keys())
+            if not common_files:
+                raise ValueError(
+                    "Parallel mode requested but no matching filenames were found."
+                )
+            source_target_wav_pairs = [
+                (source_map[name], target_map[name]) for name in common_files
+            ]
 
             # Inputs and outputs for linear regression
             combined_source_feats = []
@@ -117,11 +137,16 @@ class LinearVC(nn.Module):
             linear_target = torch.vstack(combined_linear_target)
 
         # Projection matrix
+        source_np = source_features.detach().cpu().numpy()
+        linear_target_np = linear_target.detach().cpu().numpy()
+
         if lasso is None:
             from numpy import linalg
 
             W, _, _, _ = linalg.lstsq(
-                source_features.cpu(), linear_target.cpu(), rcond=None
+                source_np,
+                linear_target_np,
+                rcond=None,
             )
         else:
             import celer
@@ -129,7 +154,8 @@ class LinearVC(nn.Module):
             print(f"Lasso with alpha: {lasso:.2f}")
 
             linear = celer.Lasso(alpha=lasso, fit_intercept=False).fit(
-                source_features.cpu().numpy(), linear_target.cpu().numpy()
+                source_np,
+                linear_target_np,
             )
             W = linear.coef_.T
 
@@ -174,27 +200,61 @@ def check_argv():
         help="source and target audio file extension (default: '.wav')",
         default=".wav",
     )
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda"],
+        default="auto",
+        help="compute device to use (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--hub-dir",
+        type=Path,
+        help=(
+            "path to a local clone of https://github.com/bshall/knn-vc to"
+            " load torch.hub modules without network access"
+        ),
+    )
     return parser.parse_args()
 
 
+def resolve_device(device_arg: str) -> str:
+    if device_arg == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device_arg == "cuda" and not torch.cuda.is_available():
+        raise ValueError("CUDA requested but torch reports that CUDA is unavailable.")
+    return device_arg
+
+
 def main(args):
-    device = "cuda"
+    device = resolve_device(args.device)
+    print(f"Using device: {device}")
+
+    if args.hub_dir is not None:
+        if not args.hub_dir.exists():
+            raise FileNotFoundError(args.hub_dir)
+        repo_or_dir = str(args.hub_dir)
+        hub_source = "local"
+    else:
+        repo_or_dir = "bshall/knn-vc"
+        hub_source = "github"
 
     # Load the WavLM feature extractor and HiFiGAN vocoder
     wavlm = torch.hub.load(
-        "bshall/knn-vc",
+        repo_or_dir,
         "wavlm_large",
         trust_repo=True,
         progress=True,
         device=device,
+        source=hub_source,
     )
     hifigan, _ = torch.hub.load(
-        "bshall/knn-vc",
+        repo_or_dir,
         "hifigan_wavlm",
         trust_repo=True,
         prematched=True,
         progress=True,
         device=device,
+        source=hub_source,
     )
 
     linearvc_model = LinearVC(wavlm, hifigan, device)
@@ -202,8 +262,16 @@ def main(args):
     # Lists of source and target audio files
     print("Reading from:", args.source_wav_dir)
     source_wavs = list(args.source_wav_dir.rglob("*" + args.extension))
+    if not source_wavs:
+        raise ValueError(
+            f"No source files ending with {args.extension} found in {args.source_wav_dir}"
+        )
     print("Reading from:", args.target_wav_dir)
     target_wavs = list(args.target_wav_dir.rglob("*" + args.extension))
+    if not target_wavs:
+        raise ValueError(
+            f"No target files ending with {args.extension} found in {args.target_wav_dir}"
+        )
 
     # Features for the source input utterance
     print("Reading:", args.input_wav)
