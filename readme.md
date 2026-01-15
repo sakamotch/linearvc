@@ -16,6 +16,37 @@ Samples: <https://www.kamperh.com/linearvc/>
 
 ## Quick start
 
+### Environment setup
+
+1. Activate the base Conda environment and install [mamba](https://mamba.readthedocs.io/) to speed up dependency resolution:
+
+       conda activate base
+       conda install -n base -c conda-forge mamba
+
+2. In the project directory, create the working environment and activate it:
+
+       mamba env create -f environment.yml
+       conda activate linearvc
+
+3. (Optional) Manually ensure the latest pip-only packages when inside the environment:
+
+       python -m pip install --upgrade pip
+       pip install speechbrain jiwer openai-whisper
+
+4. Confirm CUDA availability in the environment:
+
+   ```bash
+   python - <<'PY'
+   import torch
+   print("Torch", torch.__version__)
+   print("CUDA available:", torch.cuda.is_available())
+   if torch.cuda.is_available():
+       print(torch.cuda.get_device_name(0))
+   PY
+   ```
+
+   Seeing the GPU name indicates everything is ready. You can then launch `jupyter lab` or run scripts such as `./linearvc.py` depending on your workflow.
+
 ### Programmatic usage
 
 Install the dependencies in `environment.yml` or run `conda env create -f environment.yml` and check that everything installed correctly. The steps below are also illustrated in the [demo notebook](demo.ipynb).
@@ -181,4 +212,3 @@ Extract features for particular parallel utterances (for baselines):
 Experiments with parallel utterances:
 
     jupyter lab experiments_vctk.ipynb
-
