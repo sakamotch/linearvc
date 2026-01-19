@@ -123,8 +123,10 @@ def main(args):
     wav = load_wav_for_export(args.input_wav, device=device, vad=args.vad)
 
     wavlm_wrapper = WavLMFeatures(wavlm, args.output_layer).eval()
-    with torch.inference_mode():
+    with torch.no_grad():
         feats = wavlm_wrapper(wav)
+    # Ensure a normal tensor for tracing (not inference-mode).
+    feats = feats.detach().clone()
 
     print("Exporting WavLM:", args.wavlm_onnx)
     torch.onnx.export(
@@ -133,11 +135,8 @@ def main(args):
         args.wavlm_onnx,
         input_names=["wav"],
         output_names=["features"],
-        dynamic_axes={
-            "wav": {1: "time"},
-            "features": {1: "frames"},
-        },
         opset_version=args.opset,
+        dynamo=False,
     )
 
     print("Exporting HiFiGAN:", args.hifigan_onnx)
@@ -147,11 +146,8 @@ def main(args):
         args.hifigan_onnx,
         input_names=["features"],
         output_names=["wav"],
-        dynamic_axes={
-            "features": {1: "frames"},
-            "wav": {1: "samples"},
-        },
         opset_version=args.opset,
+        dynamo=False,
     )
 
 
