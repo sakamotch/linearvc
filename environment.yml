@@ -15,6 +15,8 @@ dependencies:
   - torchaudio>=2.5
   - pytorch-cuda=12.1
   - torchvision
+  - onnx
+  - onnxscript
   - celer
   - jupyterlab
   - ipykernel
